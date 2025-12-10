@@ -817,6 +817,54 @@ class Boltz2(LightningModule):
             diffusion_samples=self.training_args.diffusion_samples,
         )
 
+        # =====Affinityロスの計算=====
+        affinity_loss = 0.0
+        # データセットから "affinity_val" (正解ラベル) が供給されている場合のみ計算
+        if self.affinity_prediction and "affinity_val" in batch:
+            target_val = batch["affinity_val"].float().view(-1)
+            
+            # アンサンブル対応
+            preds = []
+            if self.affinity_ensemble:
+                preds.append(out["affinity_pred_value1"].view(-1))
+                preds.append(out["affinity_pred_value2"].view(-1))
+            else:
+                preds.append(out["affinity_pred_value"].view(-1))
+            
+            total_huber = 0.0
+            total_rank = 0.0
+            
+            # Lossバランス (configから取得、デフォルトは 0.5:0.5)
+            lambda_val = self.training_args.get("affinity_loss_lambda", 0.5)
+            
+            for pred in preds:
+                # A. Huber Loss (値の回帰精度)
+                total_huber += F.huber_loss(pred, target_val, delta=1.0)
+                # B. Ranking Loss (順位相関の学習)
+                total_rank += pairwise_ranking_loss(pred, target_val)
+            
+            # 平均化
+            total_huber /= len(preds)
+            total_rank /= len(preds)
+            
+            # 統合Loss
+            affinity_loss = lambda_val * total_huber + (1.0 - lambda_val) * total_rank
+            
+            # ログ記録
+            self.log("train/affinity_huber", total_huber)
+            self.log("train/affinity_rank", total_rank)
+            self.log("train/affinity_total", affinity_loss)
+
+        loss = (
+            self.training_args.confidence_loss_weight * confidence_loss_dict.get("loss", 0.0)
+            + self.training_args.diffusion_loss_weight * diffusion_loss_dict.get("loss", 0.0)
+            + self.training_args.distogram_loss_weight * disto_loss
+            + self.training_args.get("bfactor_loss_weight", 0.0) * bfactor_loss
+            
+            # Affinity Lossを追加
+            + self.training_args.get("affinity_loss_weight", 1.0) * affinity_loss
+        )
+
         # Compute losses
         if self.structure_prediction_training:
             disto_loss, _ = distogram_loss(
@@ -1253,3 +1301,22 @@ class Boltz2(LightningModule):
 
         """
         return [EMA(self.ema_decay)] if self.use_ema else []
+
+
+def pairwise_ranking_loss(pred, target):
+    """
+    RankNet Loss: 予測値の順序関係が正解と一致しない場合にペナルティを与える。
+    """
+    if pred.shape[0] < 2:
+        return torch.tensor(0.0, device=pred.device)
+    
+    # 全ペアの差分を計算 (Batch x Batch)
+    pred_diff = pred.unsqueeze(1) - pred.unsqueeze(0)
+    target_diff = target.unsqueeze(1) - target.unsqueeze(0)
+    
+    # 正解の大小関係 (-1, 0, 1)
+    S = torch.sign(target_diff)
+    
+    # Loss: log(1 + exp(-S * pred_diff))
+    loss = torch.log1p(torch.exp(-S * pred_diff))
+    return torch.mean(loss)

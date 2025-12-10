@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import csv
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -79,6 +80,7 @@ class Dataset:
     cropper: Cropper
     tokenizer: Tokenizer
     featurizer: BoltzFeaturizer
+    affinity_map: Optional[dict[str, float]] = None
 
 
 def load_input(record: Record, target_dir: Path, msa_dir: Path) -> Input:
@@ -299,6 +301,18 @@ class TrainingDataset(torch.utils.data.Dataset):
         except Exception as e:
             print(f"Featurizer failed on {sample.record.id} with error {e}. Skipping.")
             return self.__getitem__(idx)
+
+        # --- [追加] Affinity Labelの注入 ---
+        if dataset.affinity_map is not None:
+            rec_id = sample.record.id
+            if rec_id in dataset.affinity_map:
+                val = dataset.affinity_map[rec_id]
+                # 特徴量辞書に追加 (shape: [1])
+                features["affinity_val"] = torch.tensor([val], dtype=torch.float32)
+            else:
+                # ラベルがないデータは学習に使えないためスキップする (実装例: 次のインデックスを取得)
+                # print(f"Warning: No label for {rec_id}")
+                return self.__getitem__((idx + 1) % len(self))
 
         return features
 
@@ -532,6 +546,24 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
 
             # Create train dataset
             train_manifest = Manifest(train_records)
+
+            # --- [追加] Affinity CSV/JSONファイルのロード ---
+            affinity_map = {}
+            # yamlで affinity_path が指定されている場合
+            if hasattr(data_config, "affinity_path") and data_config.affinity_path:
+                af_path = Path(data_config.affinity_path)
+                if af_path.exists():
+                    if af_path.suffix == '.csv':
+                        # CSV形式: id, value (ヘッダーなし想定)
+                        with open(af_path, 'r') as f:
+                            reader = csv.reader(f)
+                            for row in reader:
+                                if len(row) >= 2:
+                                    try:
+                                        # IDと値をマッピング
+                                        affinity_map[row[0].strip()] = float(row[1])
+                                    except ValueError:
+                                        pass
             train.append(
                 Dataset(
                     target_dir,
@@ -542,6 +574,7 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
                     data_config.cropper,
                     cfg.tokenizer,
                     cfg.featurizer,
+                    affinity_map=affinity_map,
                 )
             )
 

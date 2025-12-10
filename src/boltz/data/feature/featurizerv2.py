@@ -2201,6 +2201,7 @@ class Boltz2Featurizer:
             list[tuple[tuple[int, int], tuple[int, int], float]]
         ] = None,
         compute_affinity: bool = False,
+        affinity_max_seqs: int = 32, # [追加] デフォルトを1から32へ増やす
     ) -> dict[str, Tensor]:
         """Compute features.
 
@@ -2291,11 +2292,12 @@ class Boltz2Featurizer:
         # Compute MSA features
         msa_features_affinity = {}
         if compute_affinity:
+            seqs_to_use = max(1, affinity_max_seqs)
             msa_features_affinity = process_msa_features(
                 data=data,
                 random=random,
-                max_seqs_batch=1,
-                max_seqs=1,
+                max_seqs_batch=seqs_to_use, # 変更: 1 -> seqs_to_use
+                max_seqs=seqs_to_use,
                 max_tokens=max_tokens,
                 pad_to_max_seqs=pad_to_max_seqs,
                 msa_sampling=training and msa_sampling,
