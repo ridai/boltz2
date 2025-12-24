@@ -75,7 +75,8 @@ class TrainConfig:
     debug: bool = False
     strict_loading: bool = True
     load_confidence_from_trunk: Optional[bool] = False
-
+    monitor: str = "val/lddt"  # デフォルトは従来のLDDT
+    monitor_mode: str = "max"  # デフォルトは最大化
 
 def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR0915
     """Run training.
@@ -169,11 +170,12 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
     callbacks = []
     dirpath = cfg.output
     if not cfg.disable_checkpoint:
+        print(f"Checkpoint monitoring: {cfg.monitor} (mode: {cfg.monitor_mode})")
         mc = ModelCheckpoint(
-            monitor="val/lddt",
+            monitor=cfg.monitor,       # 変更: "val/lddt" -> cfg.monitor
             save_top_k=cfg.save_top_k,
             save_last=True,
-            mode="max",
+            mode=cfg.monitor_mode,     # 変更: "max" -> cfg.monitor_mode
             every_n_epochs=1,
         )
         callbacks = [mc]
